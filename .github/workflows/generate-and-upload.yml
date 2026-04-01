@@ -2,7 +2,6 @@ name: Lofi Auto-Generate & Upload
 
 on:
   schedule:
-    # 4x sehari: 00:00, 06:00, 12:00, 18:00 UTC (07:00, 13:00, 19:00, 01:00 WIB)
     - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
@@ -17,11 +16,9 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      # ── 1. Checkout ───────────────────────────────────────────────────────
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # ── 2. Python ─────────────────────────────────────────────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -33,20 +30,18 @@ jobs:
           pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # ── 3. Node.js (untuk Tone.js renderer) ──────────────────────────────
+      # ── Node.js untuk Tone.js renderer ───────────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: scripts/tonejs-renderer/package-lock.json
+          cache: 'npm'            # Hanya ini saja
 
       - name: Install Node dependencies
         run: |
           cd scripts/tonejs-renderer
           npm ci
 
-      # ── 4. System deps (ffmpeg, virtual display, audio) ──────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -59,19 +54,17 @@ jobs:
             fonts-noto \
             fonts-noto-cjk
 
-      # ── 5. Start virtual display & audio ──────────────────────────────────
       - name: Start Xvfb (virtual display)
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
           sleep 2
 
-      - name: Start PulseAudio (virtual audio)
+      - name: Start PulseAudio
         run: |
           pulseaudio --start --exit-idle-time=-1
           sleep 2
 
-      # ── 6. Generate random seed ───────────────────────────────────────────
       - name: Generate session seed
         id: seed
         run: |
@@ -81,7 +74,6 @@ jobs:
             echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
           fi
 
-      # ── 7. Generate audio (Tone.js headless) ─────────────────────────────
       - name: Generate 1-hour lofi audio
         env:
           SEED: ${{ steps.seed.outputs.value }}
@@ -95,7 +87,6 @@ jobs:
             --output /tmp/lofi_audio.wav \
             --api-url "${LOFI_API_URL:-https://lofi.jacobzhang.de}"
 
-      # ── 8. Generate animasi background ────────────────────────────────────
       - name: Generate lofi animation
         env:
           SEED: ${{ steps.seed.outputs.value }}
@@ -106,7 +97,6 @@ jobs:
             --output /tmp/lofi_bg.mp4 \
             --duration 3600
 
-      # ── 9. Compose final video ────────────────────────────────────────────
       - name: Compose final video
         run: |
           echo "🎬 Composing final video..."
@@ -120,7 +110,6 @@ jobs:
             /tmp/lofi_final.mp4
           echo "✅ Video size: $(du -sh /tmp/lofi_final.mp4 | cut -f1)"
 
-      # ── 10. Generate metadata ──────────────────────────────────────────────
       - name: Generate video metadata
         env:
           SEED: ${{ steps.seed.outputs.value }}
@@ -129,7 +118,6 @@ jobs:
             --seed "$SEED" \
             --output /tmp/video_metadata.json
 
-      # ── 11. Upload ke YouTube ──────────────────────────────────────────────
       - name: Upload to YouTube
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
@@ -141,7 +129,6 @@ jobs:
             --video /tmp/lofi_final.mp4 \
             --metadata /tmp/video_metadata.json
 
-      # ── 12. Cleanup ────────────────────────────────────────────────────────
       - name: Cleanup temp files
         if: always()
         run: |
