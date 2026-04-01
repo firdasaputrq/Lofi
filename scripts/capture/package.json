@@ -1,14 +1,13 @@
 {
   "name": "lofi-capture",
   "version": "1.0.0",
-  "description": "Capture lofi audio from browser using puppeteer",
+  "description": "Capture lofi audio from browser using puppeteer + ffmpeg",
   "main": "capture.js",
   "scripts": {
     "start": "node capture.js"
   },
   "dependencies": {
-    "puppeteer": "^21.0.0",
-    "puppeteer-stream": "^2.3.2",
+    "puppeteer": "^22.0.0",
     "yargs": "^17.7.2"
   }
 }
