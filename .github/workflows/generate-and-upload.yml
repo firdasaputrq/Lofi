@@ -83,7 +83,7 @@ jobs:
           echo "🎵 Generating audio with seed: $SEED"
           python3 scripts/generate_audio.py \
             --seed "$SEED" \
-            --duration 3600 \
+            --duration 300 \
             --output /tmp/lofi_audio.wav \
             --api-url "${LOFI_API_URL:-https://lofi.jacobzhang.de}"
 
@@ -95,7 +95,7 @@ jobs:
           python3 scripts/generate_animation.py \
             --seed "$SEED" \
             --output /tmp/lofi_bg.mp4 \
-            --duration 3600
+            --duration 300
 
       - name: Compose final video
         run: |
