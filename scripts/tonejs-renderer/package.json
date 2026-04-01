@@ -1,0 +1,17 @@
+{
+  "name": "tonejs-renderer",
+  "version": "1.0.0",
+  "description": "Headless Tone.js audio renderer for lofi music",
+  "main": "render.js",
+  "scripts": {
+    "test": "node render.js --help"
+  },
+  "dependencies": {
+    "node-wav": "^0.0.2",
+    "minimist": "^1.2.8",
+    "web-audio-api": "^0.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
