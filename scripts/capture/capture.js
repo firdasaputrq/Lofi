@@ -1,13 +1,15 @@
 /**
  * capture.js
  * Membuka lofi.jacobzhang.de di Chrome headless,
- * menekan tombol play, lalu merekam audio selama durasi yang ditentukan.
+ * menekan tombol play, lalu merekam audio via FFmpeg dari PulseAudio VirtualSink.
+ *
+ * Tidak lagi menggunakan puppeteer-stream (deprecated/abandoned).
+ * Audio direkam langsung dari virtual sink PulseAudio yang sudah disetup di workflow.
  */
 
 const puppeteer = require('puppeteer');
-const { launch, getStream } = require('puppeteer-stream');
+const { spawn } = require('child_process');
 const fs = require('fs');
-const path = require('path');
 const yargs = require('yargs');
 
 const argv = yargs
@@ -25,22 +27,49 @@ const argv = yargs
   })
   .argv;
 
-const DURATION_MS = argv.duration * 60 * 1000;
+const DURATION_SEC = argv.duration * 60;
 const OUTPUT_PATH = argv.output;
 const LOFI_URL = 'https://lofi.jacobzhang.de/?default';
-
-// Tambah sedikit buffer time untuk warmup
 const WARMUP_MS = 8000;
 
-async function sleep(ms) {
+function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function startFfmpegRecording(outputPath, durationSec) {
+  const pulseSink = process.env.PULSE_SINK || 'VirtualSink';
+  const pulseSource = `${pulseSink}.monitor`;
+
+  console.log(`[capture] FFmpeg merekam dari PulseAudio source: ${pulseSource}`);
+
+  const ffmpeg = spawn('ffmpeg', [
+    '-y',
+    '-f', 'pulse',
+    '-i', pulseSource,
+    '-t', String(durationSec),
+    '-acodec', 'libopus',
+    '-ab', '192k',
+    '-ar', '48000',
+    outputPath,
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  ffmpeg.stdout.on('data', d => process.stdout.write(d));
+  ffmpeg.stderr.on('data', d => process.stderr.write(d));
+
+  ffmpeg.on('error', err => {
+    console.error(`[capture] FFmpeg spawn error: ${err.message}`);
+  });
+
+  return ffmpeg;
 }
 
 async function captureLofi() {
   console.log(`[capture] Mulai capture ${argv.duration} menit -> ${OUTPUT_PATH}`);
   console.log(`[capture] URL: ${LOFI_URL}`);
 
-  const browser = await launch({
+  const browser = await puppeteer.launch({
     executablePath: '/usr/bin/google-chrome-stable',
     defaultViewport: { width: 1280, height: 720 },
     args: [
@@ -51,19 +80,15 @@ async function captureLofi() {
       '--disable-web-security',
       '--autoplay-policy=no-user-gesture-required',
       '--use-fake-ui-for-media-stream',
-      '--enable-usermedia-screen-capturing',
-      '--allow-http-screen-capture',
       `--display=${process.env.DISPLAY || ':99'}`,
     ],
   });
 
   const page = await browser.newPage();
 
-  // Grant microphone/audio permissions
   const context = browser.defaultBrowserContext();
   await context.overridePermissions(LOFI_URL, ['microphone', 'camera']);
 
-  // Intercept console dari page untuk debug
   page.on('console', msg => {
     if (msg.type() === 'error') {
       console.log(`[page-error] ${msg.text()}`);
@@ -74,13 +99,11 @@ async function captureLofi() {
   await page.goto(LOFI_URL, { waitUntil: 'networkidle2', timeout: 60000 });
   console.log('[capture] Halaman dimuat');
 
-  // Tunggu element musik siap
   await sleep(3000);
 
-  // Cari dan klik tombol play
+  // Klik tombol play
   console.log('[capture] Mencari tombol play...');
   try {
-    // Coba berbagai selector yang mungkin ada di website lofi
     const playSelectors = [
       '#play-button',
       '.play-button',
@@ -100,29 +123,22 @@ async function captureLofi() {
           clicked = true;
           break;
         }
-      } catch (e) {
-        // lanjut ke selector berikutnya
-      }
+      } catch (e) { /* lanjut */ }
     }
 
     if (!clicked) {
-      // Coba klik via keyboard (spacebar sering jadi shortcut play)
       await page.keyboard.press('Space');
       console.log('[capture] Coba spacebar sebagai play');
     }
 
-    // Coba juga via evaluate jika ada AudioContext yang perlu resume
     await page.evaluate(() => {
-      // Resume semua AudioContext yang mungkin suspended
       if (window.Tone && window.Tone.context) {
         window.Tone.context.resume();
       }
-      // Trigger click pada semua element bertipe button
-      const buttons = document.querySelectorAll('button, [role="button"]');
-      buttons.forEach(b => {
+      document.querySelectorAll('button, [role="button"]').forEach(b => {
         const text = b.textContent.toLowerCase();
-        const classes = b.className.toLowerCase();
-        if (text.includes('play') || classes.includes('play') || classes.includes('start')) {
+        const cls = b.className.toLowerCase();
+        if (text.includes('play') || cls.includes('play') || cls.includes('start')) {
           b.click();
         }
       });
@@ -132,23 +148,13 @@ async function captureLofi() {
     console.log(`[capture] Peringatan saat klik play: ${e.message}`);
   }
 
-  // Warmup - tunggu audio mulai
+  // Warmup sebelum mulai rekam
   console.log(`[capture] Warmup ${WARMUP_MS / 1000} detik...`);
   await sleep(WARMUP_MS);
 
-  // Mulai capture stream
-  console.log('[capture] Mulai merekam...');
-  const stream = await getStream(page, {
-    audio: true,
-    video: false,  // audio only - lebih efisien
-    mimeType: 'audio/webm;codecs=opus',
-    audioBitsPerSecond: 192000,
-  });
-
-  const outputStream = fs.createWriteStream(OUTPUT_PATH);
-  stream.pipe(outputStream);
-
-  console.log(`[capture] Merekam selama ${argv.duration} menit...`);
+  // Mulai FFmpeg recording
+  console.log('[capture] Mulai merekam via FFmpeg + PulseAudio...');
+  const ffmpeg = startFfmpegRecording(OUTPUT_PATH, DURATION_SEC);
 
   // Progress indicator
   const startTime = Date.now();
@@ -158,14 +164,19 @@ async function captureLofi() {
     console.log(`[capture] Progress: ${elapsed}/${argv.duration} menit (sisa ${remaining} menit)`);
   }, 60000);
 
-  // Tunggu durasi selesai
-  await sleep(DURATION_MS);
-  clearInterval(progressInterval);
+  // Tunggu FFmpeg selesai (duration-limited otomatis via -t flag)
+  await new Promise((resolve, reject) => {
+    ffmpeg.on('close', code => {
+      clearInterval(progressInterval);
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`FFmpeg keluar dengan kode: ${code}`));
+      }
+    });
+  });
 
-  console.log('[capture] Durasi selesai, menghentikan rekaman...');
-  stream.destroy();
-  outputStream.end();
-
+  console.log('[capture] Rekaman selesai, menutup browser...');
   await browser.close();
 
   // Verifikasi output
