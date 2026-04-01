@@ -1,51 +1,55 @@
-name: Lofi Auto Generator
+name: Lofi CI
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
+      SEED: ${{ github.run_id }}
 
     steps:
-    # Checkout repo
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    # Setup Python
+    # -------------------------
+    # Setup Node.js + npm
+    # -------------------------
+    - name: Setup Node.js 20
+      uses: actions/setup-node@v3
+      with:
+        node-version: 20
+        cache: 'npm'
+
+    - name: Install Node.js dependencies
+      working-directory: ./scripts/tonejs-renderer
+      run: |
+        npm ci
+
+    # -------------------------
+    # Setup Python 3.11
+    # -------------------------
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: 3.11
 
-    # Upgrade pip & install dependencies
     - name: Install Python dependencies
+      working-directory: ./scripts
       run: |
         python -m pip install --upgrade pip
-        pip install -r scripts/requirements.txt
+        pip install -r requirements.txt
 
-    - name: Setup Node.js for tonejs-renderer
-      uses: actions/setup-node@v3
-      with:
-        node-version: 20
-        cache: "npm"
-        cache-dependency-path: scripts/tonejs-renderer/package-lock.json
-    
-    - name: Install Node dependencies
-      working-directory: scripts/tonejs-renderer
-      run: npm install
-
-    # Generate session seed
-    - name: Generate session seed
-      id: session_seed
-      run: |
-        echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
-
-    # Check LOFI API availability
+    # -------------------------
+    # Check LOFI API
+    # -------------------------
     - name: Check LOFI API
-      id: check_lofi_api
+      shell: bash
       run: |
         echo "🔎 Checking LOFI API..."
         if [ -z "$LOFI_API_URL" ]; then
@@ -58,20 +62,34 @@ jobs:
           echo "skip_audio=true" >> $GITHUB_ENV
         fi
 
-    # Generate 1-hour Lofi audio
-    - name: Generate 1-hour Lofi audio
+    # -------------------------
+    # Generate audio 1 jam via headless browser
+    # -------------------------
+    - name: Generate 1-hour Lofi Audio
       if: env.skip_audio != 'true'
+      shell: bash
       run: |
-        echo "🎵 Generating audio with seed: ${{ steps.session_seed.outputs.value }}"
-        python3 scripts/generate_audio.py \
-          --seed "${{ steps.session_seed.outputs.value }}" \
-          --duration 300 \
-          --output /tmp/lofi_audio.wav \
-          --api-url "$LOFI_API_URL" || echo "⚠️ Audio generation failed, will create silent track"
+        echo "🎵 Generating 1-hour Lofi Audio with seed: $SEED"
+        node ./scripts/tonejs-renderer/render_headless.js $SEED ./tmp/lofi_audio.wav
 
-    # Generate Lofi animation
-    - name: Generate Lofi animation
+    # -------------------------
+    # Generate animation
+    # -------------------------
+    - name: Generate Animation
+      shell: bash
       run: |
-        echo "🎨 Generating Lofi animation..."
-        python3 scripts/generate_animation.py \
-          --seed "${{ steps.session_seed.outputs.value }}"
+        echo "🎨 Generating Animation..."
+        python ./scripts/generate_animation.py \
+          --seed $SEED \
+          --output ./tmp/lofi_animation.mp4
+
+    # -------------------------
+    # Upload artifacts
+    # -------------------------
+    - name: Upload Lofi Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: lofi-assets
+        path: |
+          ./tmp/lofi_audio.wav
+          ./tmp/lofi_animation.mp4
