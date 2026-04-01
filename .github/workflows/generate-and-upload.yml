@@ -37,7 +37,7 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '20'
-          cache: 'none'  # matikan cache untuk menghindari error
+          cache: 'npm'  # matikan cache untuk menghindari error
       - name: Install Node.js dependencies
         run: |
           cd scripts/tonejs-renderer
