@@ -32,14 +32,17 @@ jobs:
           pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # 3. Generate session seed
+      # 3. Generate session seed (fixed)
       - name: Generate session seed
         id: seed
         run: |
-          if [ -n "${{ github.event.inputs.seed }}" ]; then
-            echo "value=${{ github.event.inputs.seed }}" >> $GITHUB_OUTPUT
+          SEED="${{ github.event.inputs.seed }}"
+          if [ -n "$SEED" ]; then
+            echo "value=$SEED" >> $GITHUB_OUTPUT
           else
-            echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
+            RANDOM_SEED=$(python3 -c 'import random; print(random.randint(1, 999999))')
+            echo "value=$RANDOM_SEED" >> $GITHUB_OUTPUT
+          fi
 
       # 4. Debug: check LOFI API
       - name: Check LOFI API availability
