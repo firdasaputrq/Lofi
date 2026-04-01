@@ -1,0 +1,163 @@
+name: Generate & Upload Lofi Video
+
+on:
+  schedule:
+    # 4x sehari: 00:00, 06:00, 12:00, 18:00 UTC (07:00, 13:00, 19:00, 01:00 WIB)
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Durasi video dalam menit (default: 60)'
+        required: false
+        default: '60'
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            ffmpeg \
+            xvfb \
+            pulseaudio \
+            libpulse0 \
+            libnss3 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libgbm1 \
+            libasound2 \
+            fonts-noto \
+            fonts-noto-cjk \
+            python3-pip
+
+      - name: Install Node.js dependencies
+        run: |
+          cd scripts/capture
+          npm install
+
+      - name: Install Python dependencies
+        run: |
+          pip install Pillow numpy google-api-python-client google-auth-httplib2 google-auth-oauthlib requests
+
+      - name: Start virtual display and audio
+        run: |
+          # Start PulseAudio virtual sink
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=VirtualSink sink_properties=device.description=VirtualSink
+          pactl set-default-sink VirtualSink
+
+          # Start Xvfb virtual display
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "Xvfb started"
+          sleep 2
+
+          # Export display
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          echo "PULSE_SINK=VirtualSink" >> $GITHUB_ENV
+
+      - name: Generate video seed and metadata
+        id: metadata
+        run: |
+          python3 scripts/generate_metadata.py
+          # Load generated metadata
+          source /tmp/lofi_metadata.env
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
+          echo "description=$DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "seed=$SEED" >> $GITHUB_OUTPUT
+          echo "theme=$THEME" >> $GITHUB_OUTPUT
+
+      - name: Capture Lofi audio from browser
+        env:
+          DISPLAY: ':99'
+          PULSE_SINK: VirtualSink
+          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '60' }}
+        run: |
+          cd scripts/capture
+          node capture.js \
+            --duration=$DURATION_MINUTES \
+            --output=/tmp/lofi_audio.webm
+          echo "Audio capture done"
+          ls -lh /tmp/lofi_audio.webm
+
+      - name: Convert audio to MP3
+        run: |
+          ffmpeg -i /tmp/lofi_audio.webm \
+            -vn -acodec libmp3lame -ab 192k -ar 44100 \
+            /tmp/lofi_audio.mp3
+          echo "MP3 conversion done"
+          ls -lh /tmp/lofi_audio.mp3
+
+      - name: Generate animation
+        env:
+          SEED: ${{ steps.metadata.outputs.seed }}
+          THEME: ${{ steps.metadata.outputs.theme }}
+          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '60' }}
+        run: |
+          python3 scripts/generate_animation.py \
+            --seed=$SEED \
+            --theme=$THEME \
+            --duration=$DURATION_MINUTES \
+            --output=/tmp/lofi_animation.mp4
+
+      - name: Combine audio and animation into final video
+        run: |
+          DURATION_SECS=$(( ${DURATION_MINUTES:-60} * 60 ))
+          ffmpeg -y \
+            -i /tmp/lofi_animation.mp4 \
+            -i /tmp/lofi_audio.mp3 \
+            -map 0:v:0 -map 1:a:0 \
+            -c:v libx264 -preset fast -crf 23 \
+            -c:a aac -b:a 192k \
+            -shortest \
+            -t $DURATION_SECS \
+            /tmp/lofi_final.mp4
+          echo "Final video created"
+          ls -lh /tmp/lofi_final.mp4
+        env:
+          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '60' }}
+
+      - name: Upload to YouTube
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          VIDEO_TITLE: ${{ steps.metadata.outputs.title }}
+          VIDEO_DESCRIPTION: ${{ steps.metadata.outputs.description }}
+          VIDEO_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          python3 scripts/upload_youtube.py \
+            --video=/tmp/lofi_final.mp4 \
+            --title="$VIDEO_TITLE" \
+            --description="$VIDEO_DESCRIPTION" \
+            --tags="$VIDEO_TAGS"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/lofi_audio.webm /tmp/lofi_audio.mp3 \
+                /tmp/lofi_animation.mp4 /tmp/lofi_final.mp4
+          pkill Xvfb || true
+          pulseaudio --kill || true
