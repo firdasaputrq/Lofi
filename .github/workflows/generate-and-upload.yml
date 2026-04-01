@@ -1,47 +1,51 @@
-name: Lofi Generator CI
+name: Lofi Auto Generator
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
-  generate_lofi:
+  build:
     runs-on: ubuntu-latest
     env:
       LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
 
     steps:
-    - name: Checkout repo
+    # Checkout repo
+    - name: Checkout repository
       uses: actions/checkout@v3
 
+    # Setup Python
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: 3.11
 
+    # Upgrade pip & install dependencies
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r scripts/requirements.txt
 
+    # Setup Node.js
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
         node-version: 20
         cache: "npm"
 
+    # Install Node.js dependencies (tonejs renderer)
     - name: Install Node.js dependencies
-      run: |
-        npm install
+      run: npm install
 
+    # Generate session seed
     - name: Generate session seed
-      id: seed
+      id: session_seed
       run: |
-        echo "value=$(python3 -c 'import random; print(random.randint(1,999999))')" >> $GITHUB_OUTPUT
+        echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
 
+    # Check LOFI API availability
     - name: Check LOFI API
-      id: lofi-check
+      id: check_lofi_api
       run: |
         echo "🔎 Checking LOFI API..."
         if [ -z "$LOFI_API_URL" ]; then
@@ -50,24 +54,24 @@ jobs:
         elif curl -sSf "$LOFI_API_URL" >/dev/null; then
           echo "✅ LOFI API is reachable"
         else
-          echo "⚠️ LOFI API not reachable, skipping audio generation"
+          echo "⚠️ LOFI API not reachable. Skipping audio generation"
           echo "skip_audio=true" >> $GITHUB_ENV
         fi
 
-    - name: Generate 1-hour Lofi audio via API
+    # Generate 1-hour Lofi audio
+    - name: Generate 1-hour Lofi audio
       if: env.skip_audio != 'true'
       run: |
-        echo "🎵 Generating audio with seed: ${{ steps.seed.outputs.value }}"
+        echo "🎵 Generating audio with seed: ${{ steps.session_seed.outputs.value }}"
         python3 scripts/generate_audio.py \
-          --seed "${{ steps.seed.outputs.value }}" \
+          --seed "${{ steps.session_seed.outputs.value }}" \
           --duration 300 \
           --output /tmp/lofi_audio.wav \
-          --api-url "$LOFI_API_URL" || \
-        echo "⚠️ Audio generation failed, creating silent track"
-        python3 -c "from pydub import AudioSegment; AudioSegment.silent(duration=300000).export('/tmp/lofi_audio.wav','wav')"
+          --api-url "$LOFI_API_URL" || echo "⚠️ Audio generation failed, will create silent track"
 
+    # Generate Lofi animation
     - name: Generate Lofi animation
       run: |
+        echo "🎨 Generating Lofi animation..."
         python3 scripts/generate_animation.py \
-          --seed "${{ steps.seed.outputs.value }}" \
-          --output /tmp/lofi_animation.mp4
+          --seed "${{ steps.session_seed.outputs.value }}"
