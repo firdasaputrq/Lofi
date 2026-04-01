@@ -37,6 +37,7 @@ jobs:
             ffmpeg \
             xvfb \
             pulseaudio \
+            pulseaudio-utils \
             libpulse0 \
             libnss3 \
             libatk-bridge2.0-0 \
@@ -47,7 +48,7 @@ jobs:
             libxdamage1 \
             libxrandr2 \
             libgbm1 \
-            libasound2t64 \
+            libasound2 \
             fonts-noto \
             fonts-noto-cjk \
             python3-pip
@@ -61,33 +62,71 @@ jobs:
         run: |
           pip install Pillow numpy google-api-python-client google-auth-httplib2 google-auth-oauthlib requests
 
-      - name: Start virtual display and audio
+      # FIX: Setup virtual display dan audio SEBELUM step lain
+      # dan export env vars dengan benar
+      - name: Start virtual display (Xvfb)
         run: |
-          # Start PulseAudio virtual sink
-          pulseaudio --start --exit-idle-time=-1
-          pactl load-module module-null-sink sink_name=VirtualSink sink_properties=device.description=VirtualSink
-          pactl set-default-sink VirtualSink
-
-          # Start Xvfb virtual display
           Xvfb :99 -screen 0 1920x1080x24 &
-          echo "Xvfb started"
+          XVFB_PID=$!
+          echo "XVFB_PID=$XVFB_PID" >> $GITHUB_ENV
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sleep 3
+          echo "[setup] Xvfb started (PID: $XVFB_PID)"
+
+      - name: Start PulseAudio virtual sink
+        run: |
+          # Kill sisa instance lama jika ada
+          pkill pulseaudio || true
+          sleep 1
+
+          # Start PulseAudio tanpa daemon mode agar lebih stabil di CI
+          pulseaudio --start \
+            --exit-idle-time=-1 \
+            --disallow-exit \
+            -D
+
           sleep 2
 
-          # Export display
-          echo "DISPLAY=:99" >> $GITHUB_ENV
+          # Buat virtual sink
+          pactl load-module module-null-sink \
+            sink_name=VirtualSink \
+            sink_properties=device.description=VirtualSink
+
+          # Set sebagai default
+          pactl set-default-sink VirtualSink
+
+          # Export env untuk Chrome
           echo "PULSE_SINK=VirtualSink" >> $GITHUB_ENV
+          echo "PULSE_SERVER=unix:${XDG_RUNTIME_DIR:-/run/user/1001}/pulse/native" >> $GITHUB_ENV
+
+          # Verifikasi PulseAudio berjalan
+          pactl info
+          pactl list sinks short
+          echo "[setup] PulseAudio ready"
+
+      - name: Verify audio setup
+        run: |
+          echo "DISPLAY=$DISPLAY"
+          echo "PULSE_SINK=$PULSE_SINK"
+          pactl stat || echo "PulseAudio stat gagal"
+          pactl list sinks short
 
       - name: Generate video seed and metadata
         id: metadata
         run: |
           python3 scripts/generate_metadata.py
-          # Load generated metadata
           source /tmp/lofi_metadata.env
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
-          echo "description=$DESCRIPTION" >> $GITHUB_OUTPUT
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          # Gunakan multiline output untuk menghindari masalah special chars
           echo "seed=$SEED" >> $GITHUB_OUTPUT
           echo "theme=$THEME" >> $GITHUB_OUTPUT
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          # Title dan description pakai EOF delimiter
+          echo "title<<EOF_TITLE" >> $GITHUB_OUTPUT
+          echo "$TITLE" >> $GITHUB_OUTPUT
+          echo "EOF_TITLE" >> $GITHUB_OUTPUT
+          echo "description<<EOF_DESC" >> $GITHUB_OUTPUT
+          echo "$DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "EOF_DESC" >> $GITHUB_OUTPUT
 
       - name: Capture Lofi audio from browser
         env:
@@ -96,19 +135,40 @@ jobs:
           DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '60' }}
         run: |
           cd scripts/capture
+          echo "[workflow] Memulai capture audio..."
+          echo "[workflow] DISPLAY=$DISPLAY"
           node capture.js \
             --duration=$DURATION_MINUTES \
             --output=/tmp/lofi_audio.webm
-          echo "Audio capture done"
+
+          echo "[workflow] Audio capture selesai"
           ls -lh /tmp/lofi_audio.webm
+
+          # Validasi ukuran file - minimal 1MB per menit
+          FILE_SIZE=$(stat -c%s /tmp/lofi_audio.webm)
+          MIN_SIZE=$(( DURATION_MINUTES * 1000000 ))
+          echo "[workflow] File size: $FILE_SIZE bytes, minimum: $MIN_SIZE bytes"
+          if [ "$FILE_SIZE" -lt 100000 ]; then
+            echo "ERROR: File audio terlalu kecil ($FILE_SIZE bytes)!"
+            exit 1
+          fi
 
       - name: Convert audio to MP3
         run: |
           ffmpeg -i /tmp/lofi_audio.webm \
             -vn -acodec libmp3lame -ab 192k -ar 44100 \
-            /tmp/lofi_audio.mp3
+            /tmp/lofi_audio.mp3 2>&1
+
           echo "MP3 conversion done"
           ls -lh /tmp/lofi_audio.mp3
+
+          # Validasi: cek apakah ada audio stream
+          AUDIO_INFO=$(ffprobe -v quiet -show_streams -select_streams a /tmp/lofi_audio.mp3 2>&1)
+          if [ -z "$AUDIO_INFO" ]; then
+            echo "ERROR: File MP3 tidak memiliki audio stream!"
+            exit 1
+          fi
+          echo "Audio stream detected: OK"
 
       - name: Generate animation
         env:
@@ -123,8 +183,11 @@ jobs:
             --output=/tmp/lofi_animation.mp4
 
       - name: Combine audio and animation into final video
+        env:
+          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '60' }}
         run: |
-          DURATION_SECS=$(( ${DURATION_MINUTES:-60} * 60 ))
+          DURATION_SECS=$(( ${DURATION_MINUTES} * 60 ))
+
           ffmpeg -y \
             -i /tmp/lofi_animation.mp4 \
             -i /tmp/lofi_audio.mp3 \
@@ -133,11 +196,20 @@ jobs:
             -c:a aac -b:a 192k \
             -shortest \
             -t $DURATION_SECS \
-            /tmp/lofi_final.mp4
+            /tmp/lofi_final.mp4 2>&1
+
           echo "Final video created"
           ls -lh /tmp/lofi_final.mp4
-        env:
-          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '60' }}
+
+          # Validasi: pastikan ada audio stream di video final
+          echo "=== Checking final video streams ==="
+          ffprobe -v quiet -show_streams /tmp/lofi_final.mp4 | grep codec_type
+          AUDIO_STREAM=$(ffprobe -v quiet -show_streams -select_streams a /tmp/lofi_final.mp4 2>&1)
+          if [ -z "$AUDIO_STREAM" ]; then
+            echo "ERROR: Video final tidak memiliki audio stream!"
+            exit 1
+          fi
+          echo "Final video audio stream: OK"
 
       - name: Upload to YouTube
         env:
@@ -158,6 +230,7 @@ jobs:
         if: always()
         run: |
           rm -f /tmp/lofi_audio.webm /tmp/lofi_audio.mp3 \
-                /tmp/lofi_animation.mp4 /tmp/lofi_final.mp4
+                /tmp/lofi_animation.mp4 /tmp/lofi_final.mp4 \
+                /tmp/lofi_metadata.env
           pkill Xvfb || true
           pulseaudio --kill || true
