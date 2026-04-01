@@ -32,6 +32,18 @@ jobs:
           pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
+      # 2b. Setup Node.js & npm dependencies (untuk audio renderer)
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Node.js dependencies
+        run: |
+          cd scripts/tonejs-renderer
+          npm install
+
       # 3. Generate session seed
       - name: Generate session seed
         id: seed
@@ -40,22 +52,20 @@ jobs:
             echo "value=${{ github.event.inputs.seed }}" >> $GITHUB_OUTPUT
           else
             echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
-          fi
 
       # 4. Debug: check LOFI API
       - name: Check LOFI API availability
         env:
           LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
         run: |
-          echo "Checking LOFI API..."
+          echo "🔎 Checking LOFI API..."
           if curl -sSf "$LOFI_API_URL" >/dev/null; then
             echo "✅ LOFI API is reachable"
           else
             echo "⚠️ LOFI API not reachable. Skipping audio generation"
             echo "skip_audio=true" >> $GITHUB_ENV
-          fi
 
-      # 5. Generate audio via LOFI API (skip jika API down)
+      # 5. Generate 1-hour lofi audio via API
       - name: Generate 1-hour lofi audio via API
         if: env.skip_audio != 'true'
         env:
