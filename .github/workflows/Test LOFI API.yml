@@ -10,3 +10,4 @@
       echo "❌ Cannot reach LOFI API! Exiting workflow."
       exit 1
     fi
+ 
