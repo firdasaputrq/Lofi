@@ -32,16 +32,14 @@ jobs:
           pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # 3. Generate session seed (fixed)
+      # 3. Generate session seed
       - name: Generate session seed
         id: seed
         run: |
-          SEED="${{ github.event.inputs.seed }}"
-          if [ -n "$SEED" ]; then
-            echo "value=$SEED" >> $GITHUB_OUTPUT
+          if [ -n "${{ github.event.inputs.seed }}" ]; then
+            echo "value=${{ github.event.inputs.seed }}" >> $GITHUB_OUTPUT
           else
-            RANDOM_SEED=$(python3 -c 'import random; print(random.randint(1, 999999))')
-            echo "value=$RANDOM_SEED" >> $GITHUB_OUTPUT
+            echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
           fi
 
       # 4. Debug: check LOFI API
@@ -49,12 +47,13 @@ jobs:
         env:
           LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
         run: |
-          echo "🔎 Checking LOFI API..."
+          echo "Checking LOFI API..."
           if curl -sSf "$LOFI_API_URL" >/dev/null; then
             echo "✅ LOFI API is reachable"
           else
             echo "⚠️ LOFI API not reachable. Skipping audio generation"
             echo "skip_audio=true" >> $GITHUB_ENV
+          fi
 
       # 5. Generate audio via LOFI API (skip jika API down)
       - name: Generate 1-hour lofi audio via API
@@ -66,7 +65,7 @@ jobs:
           echo "🎵 Generating audio with seed: $SEED"
           python3 scripts/generate_audio.py \
             --seed "$SEED" \
-            --duration 3600 \
+            --duration 300 \
             --output /tmp/lofi_audio.wav \
             --api-url "${LOFI_API_URL}"
 
@@ -78,7 +77,7 @@ jobs:
           python3 scripts/generate_animation.py \
             --seed "$SEED" \
             --output /tmp/lofi_bg.mp4 \
-            --duration 3600
+            --duration 300
 
       # 7. Compose final video (skip audio if missing)
       - name: Compose final video
@@ -88,7 +87,7 @@ jobs:
             AUDIO_INPUT="-i /tmp/lofi_audio.wav -c:a aac -b:a 192k"
           else
             echo "⚠️ Audio not generated, creating silent video"
-            ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 3600 /tmp/lofi_audio.wav
+            ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 300 /tmp/lofi_audio.wav
             AUDIO_INPUT="-i /tmp/lofi_audio.wav -c:a aac -b:a 192k"
           fi
 
