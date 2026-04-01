@@ -37,7 +37,9 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '20'
-          cache: 'npm'  # matikan cache untuk menghindari error
+          #cache: 'npm'  # matikan cache untuk menghindari error
+          cache: 'npm'
+          cache-dependency-path: 'scripts/tonejs-renderer/package-lock.json'
       - name: Install Node.js dependencies
         run: |
           cd scripts/tonejs-renderer
