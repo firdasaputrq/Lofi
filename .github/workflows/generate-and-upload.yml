@@ -54,6 +54,7 @@ jobs:
             echo "value=${{ github.event.inputs.seed }}" >> $GITHUB_OUTPUT
           else
             echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
+          fi
 
       # 5. Debug: check LOFI API
       - name: Check LOFI API availability
