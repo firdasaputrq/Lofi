@@ -18,9 +18,9 @@ jobs:
       uses: actions/checkout@v3
 
     # -------------------------
-    # Setup Node.js + npm
+    # Setup Node.js 20
     # -------------------------
-    - name: Setup Node.js 20
+    - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
         node-version: 20
@@ -63,7 +63,7 @@ jobs:
         fi
 
     # -------------------------
-    # Generate audio 1 jam via headless browser
+    # Generate 1-hour Lofi Audio via headless browser
     # -------------------------
     - name: Generate 1-hour Lofi Audio
       if: env.skip_audio != 'true'
@@ -84,10 +84,10 @@ jobs:
           --output ./tmp/lofi_animation.mp4
 
     # -------------------------
-    # Upload artifacts
+    # Upload artifacts (v4)
     # -------------------------
     - name: Upload Lofi Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: lofi-assets
         path: |
