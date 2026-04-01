@@ -71,6 +71,7 @@ jobs:
           else
             echo "⚠️ LOFI API not reachable. Skipping audio generation"
             echo "skip_audio=true" >> $GITHUB_ENV
+          fi
 
       # 6. Generate 1-hour lofi audio via API (skip jika API down)
       - name: Generate 1-hour lofi audio via API
