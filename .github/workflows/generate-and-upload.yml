@@ -1,144 +1,73 @@
-name: Lofi Auto-Generate & Upload (Safe)
+name: Lofi Generator CI
 
 on:
-  schedule:
-    - cron: '0 0,6,12,18 * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      seed:
-        description: 'Random seed (kosongkan untuk acak)'
-        required: false
-        default: ''
 
 jobs:
-  generate-and-upload:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+  generate_lofi:
+    runs-on: ubuntu-latest
+    env:
+      LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
 
     steps:
-      # 1. Checkout
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v3
 
-      # 2. Setup Python
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
 
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r scripts/requirements.txt
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      # 3. Setup Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '20'
-          #cache: 'npm'  # matikan cache untuk menghindari error
-          cache: 'npm'
-          cache-dependency-path: 'scripts/tonejs-renderer/package-lock.json'
-      - name: Install Node.js dependencies
-        run: |
-          cd scripts/tonejs-renderer
-          npm ci
-          cd ../..
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 20
+        cache: "npm"
 
-      # 4. Generate session seed
-      - name: Generate session seed
-        id: seed
-        run: |
-          if [ -n "${{ github.event.inputs.seed }}" ]; then
-            echo "value=${{ github.event.inputs.seed }}" >> $GITHUB_OUTPUT
-          else
-            echo "value=$(python3 -c 'import random; print(random.randint(1, 999999))')" >> $GITHUB_OUTPUT
-          fi
+    - name: Install Node.js dependencies
+      run: |
+        npm install
 
-      # 5. Debug: check LOFI API
-      - name: Check LOFI API availability
-        id: check_api
-        env:
-          LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
-        run: |
-          echo "🔎 Checking LOFI API..."
-          if [ -z "$LOFI_API_URL" ]; then
-            echo "⚠️ LOFI_API_URL secret is empty"
-            echo "skip_audio=true" >> $GITHUB_ENV
-          elif curl -sSf "$LOFI_API_URL" >/dev/null; then
-            echo "✅ LOFI API is reachable"
-          else
-            echo "⚠️ LOFI API not reachable. Skipping audio generation"
-            echo "skip_audio=true" >> $GITHUB_ENV
-          fi
+    - name: Generate session seed
+      id: seed
+      run: |
+        echo "value=$(python3 -c 'import random; print(random.randint(1,999999))')" >> $GITHUB_OUTPUT
 
-      # 6. Generate 1-hour lofi audio via API (skip jika API down)
-      - name: Generate 1-hour lofi audio via API
-        if: env.skip_audio != 'true'
-        env:
-          SEED: ${{ steps.seed.outputs.value }}
-          LOFI_API_URL: ${{ secrets.LOFI_API_URL }}
-        run: |
-          echo "🎵 Generating audio with seed: $SEED"
-          python3 scripts/generate_audio.py \
-            --seed "$SEED" \
-            --duration 300 \
-            --output /tmp/lofi_audio.wav \
-            --api-url "$LOFI_API_URL" || echo "⚠️ Audio generation failed, will create silent track"
+    - name: Check LOFI API
+      id: lofi-check
+      run: |
+        echo "🔎 Checking LOFI API..."
+        if [ -z "$LOFI_API_URL" ]; then
+          echo "⚠️ LOFI_API_URL secret is empty"
+          echo "skip_audio=true" >> $GITHUB_ENV
+        elif curl -sSf "$LOFI_API_URL" >/dev/null; then
+          echo "✅ LOFI API is reachable"
+        else
+          echo "⚠️ LOFI API not reachable, skipping audio generation"
+          echo "skip_audio=true" >> $GITHUB_ENV
+        fi
 
-      # 7. Generate animation
-      - name: Generate lofi animation
-        env:
-          SEED: ${{ steps.seed.outputs.value }}
-        run: |
-          python3 scripts/generate_animation.py \
-            --seed "$SEED" \
-            --output /tmp/lofi_bg.mp4 \
-            --duration 300
+    - name: Generate 1-hour Lofi audio via API
+      if: env.skip_audio != 'true'
+      run: |
+        echo "🎵 Generating audio with seed: ${{ steps.seed.outputs.value }}"
+        python3 scripts/generate_audio.py \
+          --seed "${{ steps.seed.outputs.value }}" \
+          --duration 300 \
+          --output /tmp/lofi_audio.wav \
+          --api-url "$LOFI_API_URL" || \
+        echo "⚠️ Audio generation failed, creating silent track"
+        python3 -c "from pydub import AudioSegment; AudioSegment.silent(duration=300000).export('/tmp/lofi_audio.wav','wav')"
 
-      # 8. Compose final video
-      - name: Compose final video
-        run: |
-          AUDIO_INPUT=""
-          if [ -f /tmp/lofi_audio.wav ]; then
-            AUDIO_INPUT="-i /tmp/lofi_audio.wav -c:a aac -b:a 192k"
-          else
-            echo "⚠️ Audio not generated, creating silent audio"
-            ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 300 /tmp/lofi_audio.wav
-            AUDIO_INPUT="-i /tmp/lofi_audio.wav -c:a aac -b:a 192k"
-          fi
-
-          ffmpeg -y -i /tmp/lofi_bg.mp4 $AUDIO_INPUT \
-            -c:v libx264 -preset fast -crf 23 \
-            -shortest \
-            -movflags +faststart \
-            /tmp/lofi_final.mp4
-          echo "✅ Video size: $(du -sh /tmp/lofi_final.mp4 | cut -f1)"
-
-      # 9. Generate metadata
-      - name: Generate video metadata
-        env:
-          SEED: ${{ steps.seed.outputs.value }}
-        run: |
-          python3 scripts/generate_metadata.py \
-            --seed "$SEED" \
-            --output /tmp/video_metadata.json
-
-      # 10. Upload to YouTube
-      - name: Upload to YouTube
-        env:
-          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
-          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        run: |
-          python3 scripts/upload_youtube.py \
-            --video /tmp/lofi_final.mp4 \
-            --metadata /tmp/video_metadata.json
-
-      # 11. Cleanup
-      - name: Cleanup temp files
-        if: always()
-        run: |
-          rm -f /tmp/lofi_audio.wav /tmp/lofi_bg.mp4 /tmp/lofi_final.mp4 /tmp/video_metadata.json
-          echo "🧹 Cleanup done"
+    - name: Generate Lofi animation
+      run: |
+        python3 scripts/generate_animation.py \
+          --seed "${{ steps.seed.outputs.value }}" \
+          --output /tmp/lofi_animation.mp4
